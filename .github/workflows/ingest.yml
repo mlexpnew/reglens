@@ -1,0 +1,41 @@
+name: Ingest
+
+# Manual run: downloads the SEBI circulars in data/sources.csv, builds the
+# ChromaDB index and publishes the ingestion report to the job summary.
+on:
+  workflow_dispatch:
+    inputs:
+      query:
+        description: "Retrieval smoke-test query"
+        default: "What is the Credit Risk-o-Meter for debt securities?"
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -e .
+      - name: Download, parse, chunk, embed
+        env:
+          QUERY: ${{ inputs.query }}
+        run: |
+          python -m reglens.ingest.cli --download --query "$QUERY" \
+            > report.json 2> ingest.log || { cat ingest.log; exit 1; }
+          cat ingest.log
+      - name: Publish report
+        if: always()
+        run: |
+          {
+            echo "### Ingestion report"
+            echo '```json'
+            cat report.json || true
+            echo '```'
+            echo "### Retrieval smoke test"
+            echo '```'
+            grep -E '^\[[0-9.]+\]' ingest.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
