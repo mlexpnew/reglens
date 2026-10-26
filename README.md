@@ -4,7 +4,7 @@
 
 **Ask a question about SEBI regulations. Get a cited answer, checked by a compliance agent, with eval scores on every release.**
 
-> Status: Day 1 of 7. Ingestion pipeline complete. Agents, evaluation and API land next.
+> Status: Day 1 of 7. Ingestion pipeline live and verified. Agents, evaluation and API land next.
 
 ## Why
 Compliance teams cannot trust an answer they cannot trace. RegLens refuses to answer without a citation, and every release is gated on measured faithfulness.
@@ -25,6 +25,15 @@ Served by FastAPI with API key auth, rate limiting, PII-masked JSON logs and `/m
 | Parse | Strips repeated letterheads and page numbers; flags scanned PDFs instead of indexing noise |
 | Chunk | Paragraph-aware, 1000 chars, 150 overlap, page range kept for citations |
 | Store | ChromaDB (cosine), deterministic chunk IDs so re-runs upsert, never duplicate |
+
+### Verified run ([Ingest #1](https://github.com/mlexpnew/reglens/actions/runs/40330415529))
+| Documents | Pages | Chunks | Failed docs | Time |
+|---|---|---|---|---|
+| 12 | 46 | 82 | 0 | 8.6 s |
+
+Retrieval smoke test: *"What is the Credit Risk-o-Meter for debt securities?"* returned the correct circular for all top 3 results (cosine similarity 0.70 to 0.73).
+
+Re-run anytime: **Actions > Ingest > Run workflow**.
 
 ## Evaluation (coming Day 4)
 | Metric | Score |
