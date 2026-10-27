@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Protocol
 
@@ -13,15 +14,26 @@ class VectorStore(Protocol):
     def count(self) -> int: ...
 
 
-class ChromaStore:
-    """Persistent ChromaDB collection. Uses Chroma's default local embedder (no API key)."""
+def collection_name(base: str, embed_model: str) -> str:
+    """One collection per embedding model: vectors from different models never mix."""
+    slug = re.sub(r"[^a-z0-9]+", "-", embed_model.lower()).strip("-")
+    return f"{base}__{slug}"[:63]
 
-    def __init__(self, path: Path, collection: str) -> None:
-        import chromadb  # imported lazily: heavy dependency
+
+class ChromaStore:
+    """Persistent ChromaDB collection embedded with a Hugging Face sentence-transformer."""
+
+    def __init__(self, path: Path, collection: str, embed_model: str) -> None:
+        import chromadb  # lazy: heavy dependency
+        from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 
         self._client = chromadb.PersistentClient(path=str(path))
         self._col = self._client.get_or_create_collection(
-            name=collection, metadata={"hnsw:space": "cosine"}
+            name=collection_name(collection, embed_model),
+            embedding_function=SentenceTransformerEmbeddingFunction(
+                model_name=embed_model, normalize_embeddings=True
+            ),
+            metadata={"hnsw:space": "cosine", "embed_model": embed_model},
         )
 
     def upsert(self, chunks: list[Chunk], batch: int = 128) -> None:
