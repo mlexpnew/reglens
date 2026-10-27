@@ -14,10 +14,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.5", "reportlab>=4.0"]
+# Hugging Face models for embeddings + reranking (pulls torch; install CPU wheel first)
+hf = ["sentence-transformers>=3.0"]
+# Agent orchestration + LLM
+agents = ["langgraph>=0.2", "google-genai>=1.0"]
+# Tests use fakes for models and LLM, so CI stays fast and needs no API key
+dev = ["pytest>=8.0", "ruff>=0.5", "reportlab>=4.0", "langgraph>=0.2"]
 
 [project.scripts]
 reglens-ingest = "reglens.ingest.cli:main"
+reglens-ask = "reglens.ask:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
