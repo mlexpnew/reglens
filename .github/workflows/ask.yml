@@ -56,6 +56,8 @@ jobs:
             i=$((i+1))
             if ! python -m reglens.ask --json "$q" > "answer_$i.json" 2> "err_$i.log"; then
               failed=$((failed+1))
+              # surface the cause on the run page (and via the checks API), not only in logs
+              echo "::error title=Q$i failed::$(grep -vE '^\s*$' "err_$i.log" | tail -3 | tr '\n' ' ' | cut -c1-600)"
               { echo; echo "### Q$i. $q"; echo; echo "> ⚠️ failed: $(tail -1 "err_$i.log")"; } >> "$GITHUB_STEP_SUMMARY"
               continue
             fi
