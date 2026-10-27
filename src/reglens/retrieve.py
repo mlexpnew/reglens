@@ -55,6 +55,19 @@ def _sigmoid(x: float) -> float:
     return 1 / (1 + math.exp(-x))
 
 
+def to_relevance(raw: list[float]) -> list[float]:
+    """Normalise cross-encoder output to 0..1.
+
+    sentence-transformers already applies sigmoid for single-label rerankers such as
+    bge-reranker, so scores arrive as probabilities. Applying sigmoid again squashes
+    everything into 0.5..0.73 and silently disables the relevance gate. Only raw
+    logits (any value outside 0..1) are passed through sigmoid here.
+    """
+    if all(0.0 <= s <= 1.0 for s in raw):
+        return [round(s, 4) for s in raw]
+    return [round(_sigmoid(s), 4) for s in raw]
+
+
 class CrossEncoderReranker:
     """Hugging Face cross-encoder: reads query and passage together, far more precise
     than comparing two independent vectors."""
@@ -69,9 +82,6 @@ class CrossEncoderReranker:
     def rerank(self, query: str, passages: list[Passage], k: int) -> list[Passage]:
         if not passages:
             return []
-        logits = self._model.predict([(query, p.text) for p in passages])
-        scored = [
-            replace(p, score=round(_sigmoid(float(s)), 4))
-            for p, s in zip(passages, logits, strict=True)
-        ]
+        raw = [float(s) for s in self._model.predict([(query, p.text) for p in passages])]
+        scored = [replace(p, score=s) for p, s in zip(passages, to_relevance(raw), strict=True)]
         return sorted(scored, key=lambda p: p.score, reverse=True)[:k]

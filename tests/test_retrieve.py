@@ -43,3 +43,17 @@ def test_collection_is_namespaced_per_embedding_model():
     a = collection_name("sebi", "BAAI/bge-small-en-v1.5")
     b = collection_name("sebi", "all-MiniLM-L6-v2")
     assert a != b and a.startswith("sebi__") and len(a) <= 63
+
+
+class ProbabilityCrossEncoder:
+    """Mimics sentence-transformers rerankers that already return sigmoid probabilities."""
+
+    def predict(self, pairs):
+        return [0.98 if "meter" in p else 0.002 for _, p in pairs]
+
+
+def test_probabilities_are_not_squashed_twice():
+    # regression: double sigmoid turned 0.002 into 0.50 and disabled the relevance gate
+    rr = CrossEncoderReranker("fake", model=ProbabilityCrossEncoder())
+    out = rr.rerank("q", [P(1, "credit risk meter"), P(2, "cricket")], k=2)
+    assert [p.score for p in out] == [0.98, 0.002]
