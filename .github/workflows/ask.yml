@@ -28,6 +28,10 @@ jobs:
         with:
           path: ~/.cache/huggingface
           key: hf-${{ hashFiles('src/reglens/config.py') }}
+      - uses: actions/cache@v4
+        with:
+          path: data/raw
+          key: sebi-pdfs-${{ hashFiles('data/sources.csv') }}
       - name: Build index
         run: python -m reglens.ingest.cli --download > report.json 2> ingest.log || { cat ingest.log; exit 1; }
       - name: Ask
