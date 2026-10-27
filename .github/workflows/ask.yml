@@ -72,6 +72,18 @@ jobs:
           print(f"\n<sub>refused={a['refused']} · latency={a['latency_s']}s · "
                 f"rerank relevance: {rel}{' · ' + a['reason'] if a['reason'] else ''}</sub>")
           PY
+            # also publish each answer as a run annotation: readable on the run page
+            # and through the checks API without opening logs or downloading artifacts
+            python - "$i" <<'PY'
+          import json, sys
+          a = json.load(open(f"answer_{sys.argv[1]}.json"))
+          lines = [a["text"], ""] + [f"[{k}] {v}" for k, v in a["citations"].items()]
+          rel = ", ".join(f"{p['relevance']:.2f}" for p in a["top_passages"]) or "none"
+          lines.append(f"refused={a['refused']} latency={a['latency_s']}s relevance={rel} {a['reason']}")
+          msg = "\n".join(lines).replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+          title = f"Q{sys.argv[1]} {a['question']}"[:120].replace(":", " -").replace(",", " ")
+          print(f"::notice title={title}::{msg}")
+          PY
           done < questions.txt
           echo "answered $((i-failed))/$i"
           [ "$failed" -eq 0 ]
