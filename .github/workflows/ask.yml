@@ -46,11 +46,15 @@ jobs:
           EOF
           fi
           echo "## RegLens answers" >> "$GITHUB_STEP_SUMMARY"
-          i=0
+          i=0; failed=0
           while IFS= read -r q; do
             q="$(echo "$q" | sed 's/^ *//')"; [ -z "$q" ] && continue
             i=$((i+1))
-            python -m reglens.ask --json "$q" > "answer_$i.json"
+            if ! python -m reglens.ask --json "$q" > "answer_$i.json" 2> "err_$i.log"; then
+              failed=$((failed+1))
+              { echo; echo "### Q$i. $q"; echo; echo "> ⚠️ failed: $(tail -1 "err_$i.log")"; } >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
             python - "$i" >> "$GITHUB_STEP_SUMMARY" <<'PY'
           import json, sys
           a = json.load(open(f"answer_{sys.argv[1]}.json"))
@@ -63,6 +67,8 @@ jobs:
                 f"rerank relevance: {rel}{' · ' + a['reason'] if a['reason'] else ''}</sub>")
           PY
           done < questions.txt
+          echo "answered $((i-failed))/$i"
+          [ "$failed" -eq 0 ]
       - uses: actions/upload-artifact@v4
         if: always()
         with:
