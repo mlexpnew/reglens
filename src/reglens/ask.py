@@ -38,6 +38,10 @@ def main(argv: list[str] | None = None) -> int:
         retrieve_k=settings.retrieve_k,
         rerank_k=settings.rerank_k,
         min_relevance=settings.min_relevance,
+        use_planner=settings.use_planner,
+        use_checker=settings.use_checker,
+        max_sub_queries=settings.max_sub_queries,
+        max_revisions=settings.max_revisions,
     )
     t0 = time.perf_counter()
     state = graph.invoke({"question": question})
@@ -47,6 +51,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.json:
         out = answer.to_dict()
         out["latency_s"] = latency
+        out["sub_queries"] = state.get("sub_queries", [])
         out["top_passages"] = [
             {"id": p.id, "relevance": p.score, "citation": p.citation}
             for p in state.get("passages", [])
