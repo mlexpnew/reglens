@@ -2,8 +2,19 @@
 
 from __future__ import annotations
 
+import logging
 import os
-from typing import Protocol
+import random
+import time
+from collections.abc import Callable
+from typing import Protocol, TypeVar
+
+log = logging.getLogger(__name__)
+T = TypeVar("T")
+
+# 429 = rate limited, 5xx = provider overloaded or down: worth retrying.
+# 4xx like 400/401/403 are our fault (bad request, bad key): retrying wastes time.
+RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 
 
 class LLM(Protocol):
@@ -14,6 +25,34 @@ class LLM(Protocol):
 
 class LLMConfigError(RuntimeError):
     pass
+
+
+def _status(exc: Exception) -> int | None:
+    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    return code if isinstance(code, int) else None
+
+
+def with_retry(
+    fn: Callable[[], T],
+    attempts: int = 5,
+    base_delay: float = 2.0,
+    max_delay: float = 30.0,
+    sleep: Callable[[float], None] = time.sleep,
+) -> T:
+    """Exponential backoff with full jitter, retrying only transient failures."""
+    for attempt in range(1, attempts + 1):
+        try:
+            return fn()
+        except Exception as exc:
+            status = _status(exc)
+            if status not in RETRYABLE_STATUS or attempt == attempts:
+                raise
+            delay = random.uniform(0, min(max_delay, base_delay * 2 ** (attempt - 1)))
+            log.warning(
+                "LLM %s on attempt %d/%d, retrying in %.1fs", status, attempt, attempts, delay
+            )
+            sleep(delay)
+    raise AssertionError("unreachable")
 
 
 class GeminiLLM:
@@ -32,7 +71,9 @@ class GeminiLLM:
         )
 
     def complete_json(self, prompt: str) -> str:
-        resp = self._client.models.generate_content(
-            model=self._model, contents=prompt, config=self._config
+        resp = with_retry(
+            lambda: self._client.models.generate_content(
+                model=self._model, contents=prompt, config=self._config
+            )
         )
         return resp.text or ""
