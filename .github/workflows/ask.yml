@@ -1,0 +1,70 @@
+name: Ask
+
+# Manual demo: build the index, then answer questions with the agent graph.
+# Leave "question" empty to run the built-in demo set, which includes one
+# off-topic question to prove the refusal path.
+on:
+  workflow_dispatch:
+    inputs:
+      question:
+        description: "Your SEBI question (empty = run demo set)"
+        required: false
+        default: ""
+
+jobs:
+  ask:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[hf,agents]"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ hashFiles('src/reglens/config.py') }}
+      - name: Build index
+        run: python -m reglens.ingest.cli --download > report.json 2> ingest.log || { cat ingest.log; exit 1; }
+      - name: Ask
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          QUESTION: ${{ inputs.question }}
+        run: |
+          if [ -n "$QUESTION" ]; then
+            printf '%s\n' "$QUESTION" > questions.txt
+          else
+            cat > questions.txt <<'EOF'
+          What is the Credit Risk-o-Meter and which securities does it apply to?
+          What are the revised position limits for clients in commodity derivatives?
+          What must stock brokers display on their trading apps under Project Jagrook?
+          Who won the 2011 Cricket World Cup?
+          EOF
+          fi
+          echo "## RegLens answers" >> "$GITHUB_STEP_SUMMARY"
+          i=0
+          while IFS= read -r q; do
+            q="$(echo "$q" | sed 's/^ *//')"; [ -z "$q" ] && continue
+            i=$((i+1))
+            python -m reglens.ask --json "$q" > "answer_$i.json"
+            python - "$i" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json, sys
+          a = json.load(open(f"answer_{sys.argv[1]}.json"))
+          print(f"\n### Q{sys.argv[1]}. {a['question']}\n")
+          print(a["text"] + "\n")
+          for lbl, cite in a["citations"].items():
+              print(f"- **[{lbl}]** [{cite}]({a['urls'][lbl]})")
+          rel = ", ".join(f"{p['relevance']:.2f}" for p in a["top_passages"]) or "none"
+          print(f"\n<sub>refused={a['refused']} · latency={a['latency_s']}s · "
+                f"rerank relevance: {rel}{' · ' + a['reason'] if a['reason'] else ''}</sub>")
+          PY
+          done < questions.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: answers
+          path: answer_*.json

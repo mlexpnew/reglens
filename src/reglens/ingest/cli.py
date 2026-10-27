@@ -27,7 +27,7 @@ def main(argv: list[str] | None = None) -> int:
     sources = load_manifest(settings.manifest)
     if args.download:
         download_all(sources, settings.raw_dir)
-    store = ChromaStore(settings.chroma_dir, settings.collection)
+    store = ChromaStore(settings.chroma_dir, settings.collection, settings.embed_model)
     report = ingest(sources, settings.raw_dir, store, settings.chunk_chars, settings.chunk_overlap)
     print(report.to_json())
 

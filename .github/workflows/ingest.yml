@@ -1,7 +1,7 @@
 name: Ingest
 
-# Manual run: downloads the SEBI circulars in data/sources.csv, builds the
-# ChromaDB index and publishes the ingestion report to the job summary.
+# Manual run: downloads the SEBI circulars in data/sources.csv, embeds them with a
+# Hugging Face model into ChromaDB and publishes the ingestion report.
 on:
   workflow_dispatch:
     inputs:
@@ -18,7 +18,14 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-      - run: pip install -e .
+      - name: Install (CPU torch keeps the runner small)
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[hf]"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ hashFiles('src/reglens/config.py') }}
       - name: Download, parse, chunk, embed
         env:
           QUERY: ${{ inputs.query }}
