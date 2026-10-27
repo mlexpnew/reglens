@@ -4,7 +4,7 @@
 
 **Ask a question about SEBI regulations. Get a cited answer, checked by a compliance agent, with eval scores on every release.**
 
-> Status: Day 2 of 7. Hugging Face retrieval and cited-answer agents live and verified. Planner, Checker, evaluation and API land next.
+> Status: Day 3 of 7. Full agent loop live: Planner, Analyst and Compliance Checker with verified citations. Evaluation and API land next.
 
 ## Why
 Compliance teams cannot trust an answer they cannot trace. RegLens refuses to answer without a citation, and every release is gated on measured faithfulness.
@@ -61,6 +61,34 @@ question -> retrieve (bge-small, top 12) -> rerank (bge-reranker, top 4) -> rele
 All 3 in-scope answers cited the correct circular; the off-topic question was refused without calling the LLM.
 Ask your own question: **Actions > Ask > Run workflow**.
 
+## Planner + Compliance Checker (Day 3, done)
+```
+retrieve -> gate --(nothing relevant)--> refuse                         (0 LLM calls)
+              \-> plan --(sub-queries)--> expand -> analyze -> check --(verified)--> answer
+                     \--------------------------------^    ^        |
+                                                          \-revise-/  (max 1)
+```
+| Piece | Design choice |
+|---|---|
+| Gate first | Planner runs only after the relevance gate passes, so off-topic questions stay free |
+| Planner | Splits multi-part questions into at most 3 sub-queries; each is reranked against itself so every part gets its own evidence |
+| Checker, layer 1 | Code: every number in a claim must appear in its cited source. Catches invented figures even if the reviewer model says "supported" |
+| Checker, layer 2 | LLM reviewer judges each claim against only the sources it cites |
+| Fail closed | Missing verdict or unreadable reviewer output counts as unsupported |
+| Revise loop | Rejected claims go back to the Analyst once with reasons; still unsupported claims are removed; nothing verified means refusal |
+| Ablation | `REGLENS_USE_PLANNER` / `REGLENS_USE_CHECKER` switch agents off, so Day 4 can measure what each adds |
+
+### Verified demo ([Ask #7](https://github.com/mlexpnew/reglens/actions/runs/40467064514))
+| Question | Result | Sub-queries | Sources cited | Latency |
+|---|---|---|---|---|
+| What is the Credit Risk-o-Meter and which securities does it apply to? | Verified | 2 | Credit Risk-o-Meter circular | 22.3 s |
+| What are the revised position limits for clients in commodity derivatives? | Verified | 0 | Position limits circular, p. 4 | 11.7 s |
+| What must stock brokers display on their trading apps under Project Jagrook? | Verified | 0 | Project Jagrook circular | 22.6 s |
+| What is the Credit Risk-o-Meter, **and** what are the position limits for broad commodities? | Verified, both parts answered | 2 | Credit Risk-o-Meter **and** Position limits circulars | 22.0 s |
+| Who won the 2011 Cricket World Cup? (off-topic) | **Refused**, 0 LLM calls | 0 | none | 6.7 s |
+
+Trade-off measured: the Checker adds an LLM call, so verified answers take roughly 2x longer than Day 2 (12 to 23 s vs 6 to 12 s). Day 4 evaluation quantifies whether the accuracy gain is worth it.
+
 ## Evaluation (coming Day 4)
 | Metric | Score |
 |---|---|
@@ -83,7 +111,7 @@ reglens-ask "What is the Credit Risk-o-Meter?"
 ## Project layout
 ```
 src/reglens/ingest/   manifest, download, parse, chunk, store, pipeline, cli
-src/reglens/agents/   LangGraph graph, Analyst with citation check, Gemini client
+src/reglens/agents/   LangGraph graph, Planner, Analyst, Checker, Gemini client
 src/reglens/retrieve.py  vector retrieval + cross-encoder reranking
 src/reglens/ask.py    question CLI
 tests/                unit + end-to-end tests with fakes (no network, no API key)
