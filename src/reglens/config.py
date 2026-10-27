@@ -27,5 +27,11 @@ class Settings:
 
     llm_model: str = os.getenv("REGLENS_LLM_MODEL", "gemini-2.5-flash")
 
+    # Agents: switchable so evaluation can measure what each one adds (ablation)
+    use_planner: bool = os.getenv("REGLENS_USE_PLANNER", "1") == "1"
+    use_checker: bool = os.getenv("REGLENS_USE_CHECKER", "1") == "1"
+    max_sub_queries: int = int(os.getenv("REGLENS_MAX_SUB_QUERIES", "3"))
+    max_revisions: int = int(os.getenv("REGLENS_MAX_REVISIONS", "1"))
+
 
 settings = Settings()
