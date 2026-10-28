@@ -8,6 +8,10 @@
 
 ## Demo
 
+![RegLens answering a multi-part SEBI question with verified citations, then refusing an off-topic question](docs/demo.gif)
+
+_Real run, not sped up: about 20 s of model loading, then a verified answer in 16 s; the off-topic question is refused in about 1 s with no LLM call._
+
 **Try it in 1 minute, no install:** Actions > Ask > Run workflow, type a question, read the cited answer in the job log ([example run](https://github.com/mlexpnew/reglens/actions/runs/40467064514)).
 
 **Record a terminal demo** (a real run, needs `GEMINI_API_KEY` and `make ingest` first):
