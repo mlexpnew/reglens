@@ -6,6 +6,17 @@
 
 > Status: Day 3 of 7. Full agent loop live: Planner, Analyst and Compliance Checker with verified citations. Evaluation and API land next.
 
+## Demo
+
+**Try it in 1 minute, no install:** Actions > Ask > Run workflow, type a question, read the cited answer in the job log ([example run](https://github.com/mlexpnew/reglens/actions/runs/40467064514)).
+
+**Record a terminal demo** (a real run, needs `GEMINI_API_KEY` and `make ingest` first):
+
+```bash
+brew install vhs        # or: go install github.com/charmbracelet/vhs@latest
+vhs docs/demo.tape      # writes docs/demo.gif
+```
+
 ## Why
 Compliance teams cannot trust an answer they cannot trace. RegLens refuses to answer without a citation, and every release is gated on measured faithfulness.
 
