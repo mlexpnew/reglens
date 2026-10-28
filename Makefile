@@ -1,7 +1,12 @@
-.PHONY: install test lint ingest
+.PHONY: install install-full test lint ingest
 
+# Lightweight: tests and CI only (models and LLM are faked)
 install:
 	pip install -e ".[dev]"
+
+# Everything needed to run ingest and ask locally (pulls PyTorch, ~1 GB)
+install-full:
+	pip install -e ".[dev,hf,agents]"
 
 test:
 	pytest -q
