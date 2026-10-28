@@ -101,18 +101,13 @@ retrieve -> gate --(nothing relevant)--> refuse                         (0 LLM c
 Trade-off measured: the Checker adds an LLM call, so verified answers take roughly 2x longer than Day 2 (12 to 23 s vs 6 to 12 s). Day 4 evaluation quantifies whether the accuracy gain is worth it.
 
 ## Evaluation (coming Day 4)
-| Metric | Score |
-|---|---|
-| Faithfulness | [ADD METRIC] |
-| Answer relevance | [ADD METRIC] |
-| Retrieval recall@5 | [ADD METRIC] |
-| p95 latency | [ADD METRIC] |
-| Cost per query | [ADD METRIC] |
+
+Day 4 measures RegLens on a labeled set of SEBI questions: faithfulness, answer relevance, retrieval recall@5, p95 latency and cost per query. Each metric is run with the Planner and Checker switched on and off (ablation), so the README will show what every agent actually adds. Scores replace this paragraph when they exist.
 
 ## Run locally
 ```bash
 python -m venv .venv && source .venv/bin/activate
-make install
+make install-full        # dev + Hugging Face models + agents (pulls PyTorch, ~1 GB)
 make test
 make ingest   # downloads circulars, builds the index, runs a sample query
 export GEMINI_API_KEY=...   # free key from aistudio.google.com
