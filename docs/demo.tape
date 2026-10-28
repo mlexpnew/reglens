@@ -2,7 +2,7 @@
 # Prereqs (from repo root): make install && make ingest, GEMINI_API_KEY exported
 # Install VHS: brew install vhs  (or: go install github.com/charmbracelet/vhs@latest)
 # Record:      vhs docs/demo.tape
-# Warnings and progress bars (stderr) are hidden so only the answers show.
+# Warnings and progress bars from reglens-ask (its stderr) are hidden; prompt and typing stay visible.
 
 Output docs/demo.gif
 
@@ -15,7 +15,7 @@ Set Theme "Catppuccin Mocha"
 Set TypingSpeed 40ms
 
 Hide
-Type "source .venv/bin/activate && export TQDM_DISABLE=1 HF_HUB_DISABLE_PROGRESS_BARS=1 TRANSFORMERS_VERBOSITY=error && exec 2>/dev/null; clear"
+Type `source .venv/bin/activate && export TQDM_DISABLE=1 HF_HUB_DISABLE_PROGRESS_BARS=1 TRANSFORMERS_VERBOSITY=error; reglens-ask() { command reglens-ask "$@" 2>/dev/null; }; clear`
 Enter
 Show
 
