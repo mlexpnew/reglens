@@ -16,12 +16,12 @@ on:
       sleep:
         description: "Seconds between questions (helps with free-tier rate limits)"
         required: false
-        default: "4"
+        default: "15"
 
 jobs:
   eval:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
