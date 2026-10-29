@@ -5,6 +5,8 @@ from reglens.agents.analyst import Answer, Claim
 from reglens.eval import (
     CountingLLM,
     Question,
+    _fmt,
+    details_markdown,
     evaluate,
     fact_hits,
     load_questions,
@@ -125,7 +127,14 @@ def test_evaluate_counts_calls_and_survives_errors():
     passages = [P(1, "cpl", "Broad 2% of the deliverable supply")]
     graph = FakeGraph(llm, [answered_state("2%.", ["S1"], passages), RuntimeError("429")])
     ticks = iter([0.0, 1.5, 10.0, 10.25])
-    rows = evaluate([Q_LIMIT, Q_OFF], graph, llm, clock=lambda: next(ticks), log=lambda m: None)
+    rows = evaluate(
+        [Q_LIMIT, Q_OFF],
+        graph,
+        llm,
+        retry_cooldown_s=-1,
+        clock=lambda: next(ticks),
+        log=lambda m: None,
+    )
     assert [r["latency_s"] for r in rows] == [1.5, 0.25]
     assert rows[0]["llm_calls"] == 1 and rows[0]["approx_tokens"] == (6 + 2) // 4
     assert rows[1]["error"].startswith("RuntimeError")
@@ -202,3 +211,27 @@ def test_evaluate_with_real_graph_and_ablation():
         assert row["fact_hits"] == 2 and row["cited_docs"] == ["cpl"]
         calls[name] = row["llm_calls"]
     assert calls == {"full": 3, "no_checker": 2}  # planner + analyst (+ checker)
+
+
+def test_failed_questions_are_retried_once_after_cooldown():
+    llm = CountingLLM(EchoLLM())
+    passages = [P(1, "cpl", "Broad 2% of the deliverable supply")]
+    graph = FakeGraph(llm, [RuntimeError("429"), answered_state("2%.", ["S1"], passages)])
+    waits = []
+    (row,) = evaluate([Q_LIMIT], graph, llm, sleep=waits.append, log=lambda m: None)
+    assert waits == [60.0]
+    assert row["error"] is None and row["retried"] and row["fact_hits"] == 1
+
+
+def test_formatting_and_per_question_details():
+    assert _fmt(2.6667) == "2.7" and _fmt(1444.33) == "1,444" and _fmt(3) == "3"
+    assert _fmt(0.5, pct=True) == "50%" and _fmt(None) == "n/a"
+    passages = [P(1, "cpl", "Broad 2% of the deliverable supply")]
+    rows = [
+        score(Q_LIMIT, answered_state("2%.", ["S1"], passages), 1.0),
+        score(Q_OFF, refused_state(), 0.5),
+        score(Q_LIMIT, None, 2.0, error="RuntimeError: 429"),
+    ]
+    md = details_markdown(rows)
+    assert "| q1 | single | verified | 1/2 | cpl | 1.0 |" in md
+    assert "refused (no evidence)" in md and "error: RuntimeError: 429" in md
