@@ -248,13 +248,18 @@ def evaluate(
     graph,
     llm: CountingLLM,
     sleep_s: float = 0.0,
+    retry_cooldown_s: float = 60.0,
     clock: Callable[[], float] = time.perf_counter,
     sleep: Callable[[float], None] = time.sleep,
     log: Callable[[str], None] = lambda msg: print(msg, file=sys.stderr),
 ) -> list[dict]:
-    """Run one configuration. A failing question is recorded, never fatal."""
-    rows = []
-    for i, q in enumerate(questions, start=1):
+    """Run one configuration. A failing question is recorded, never fatal.
+
+    Questions that fail (typically a provider rate limit) are retried once after a
+    cooldown, so a burst of 429s does not count as a wrong answer.
+    """
+
+    def run(q: Question) -> dict:
         llm.reset()
         t0 = clock()
         state, error = None, None
@@ -262,19 +267,60 @@ def evaluate(
             state = graph.invoke({"question": q.question})
         except Exception as exc:  # record the failure and keep going
             error = f"{type(exc).__name__}: {exc}"[:300]
-        row = score(q, state, clock() - t0, llm.calls, llm.chars, error)
-        rows.append(row)
-        status = "ERROR" if error else ("refused" if row["refused"] else "answered")
-        log(f"[{i}/{len(questions)}] {q.id}: {status} in {row['latency_s']}s")
+        return score(q, state, clock() - t0, llm.calls, llm.chars, error)
+
+    def status(row: dict) -> str:
+        return "ERROR" if row["error"] else ("refused" if row["refused"] else "answered")
+
+    rows = []
+    for i, q in enumerate(questions, start=1):
+        rows.append(run(q))
+        log(f"[{i}/{len(questions)}] {q.id}: {status(rows[-1])} in {rows[-1]['latency_s']}s")
         if sleep_s and i < len(questions):
             sleep(sleep_s)
+
+    failed = [i for i, r in enumerate(rows) if r["error"]]
+    if failed and retry_cooldown_s >= 0:
+        log(f"retrying {len(failed)} failed question(s) after {retry_cooldown_s:g}s")
+        sleep(retry_cooldown_s)
+        for i in failed:
+            rows[i] = run(questions[i])
+            rows[i]["retried"] = True
+            log(f"[retry] {questions[i].id}: {status(rows[i])} in {rows[i]['latency_s']}s")
+            if sleep_s:
+                sleep(sleep_s)
     return rows
 
 
 def _fmt(value, pct: bool = False) -> str:
     if value is None:
         return "n/a"
-    return f"{value * 100:.0f}%" if pct else f"{value:g}"
+    if pct:
+        return f"{value * 100:.0f}%"
+    if isinstance(value, int):
+        return str(value)
+    return f"{value:,.0f}" if value >= 100 else f"{value:.1f}"
+
+
+def details_markdown(rows: list[dict]) -> str:
+    """Per-question outcome table, so every score can be traced to an answer."""
+    out = [
+        "| Question | Category | Outcome | Facts | Cited circulars | Latency (s) |",
+        "|---|---|---|---|---|---|",
+    ]
+    for r in rows:
+        if r.get("error"):
+            outcome, facts, cited = f"error: {r['error'][:60]}", "", ""
+        else:
+            outcome = "refused" if r["refused"] else ("verified" if r["verified"] else "answered")
+            if r["refused"] and r.get("reason"):
+                outcome += f" ({r['reason'][:60]})"
+            facts = f"{r['fact_hits']}/{r['facts']}" if r["facts"] else "-"
+            cited = ", ".join(r["cited_docs"]) or "-"
+        out.append(
+            f"| {r['id']} | {r['category']} | {outcome} | {facts} | {cited} | {r['latency_s']} |"
+        )
+    return "\n".join(out) + "\n"
 
 
 METRIC_ROWS = [
@@ -294,7 +340,11 @@ METRIC_ROWS = [
 
 
 def report_markdown(
-    summaries: dict[str, dict], retrieval: dict | None, n_questions: int, counts: dict
+    summaries: dict[str, dict],
+    retrieval: dict | None,
+    n_questions: int,
+    counts: dict,
+    rows_by_config: dict[str, list[dict]] | None = None,
 ) -> str:
     mix = ", ".join(f"{v} {k}" for k, v in counts.items())
     out = [f"### RegLens evaluation ({n_questions} questions: {mix})", ""]
@@ -308,6 +358,9 @@ def report_markdown(
         for label, key, pct in METRIC_ROWS:
             cells = " | ".join(_fmt(summaries[n][key], pct) for n in names)
             out.append(f"| {label} | {cells} |")
+    for name, rows in (rows_by_config or {}).items():
+        out += ["", f"<details><summary>Per-question results: {name}</summary>", ""]
+        out += [details_markdown(rows), "</details>"]
     return "\n".join(out) + "\n"
 
 
@@ -318,6 +371,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", default="eval_results")
     p.add_argument("--limit", type=int, default=0, help="only the first N questions")
     p.add_argument("--sleep", type=float, default=0.0, help="seconds between questions")
+    p.add_argument(
+        "--retry-cooldown",
+        type=float,
+        default=60.0,
+        help="seconds to wait before retrying failed questions once (-1 disables)",
+    )
     p.add_argument("--retrieval-only", action="store_true", help="skip all LLM calls")
     args = p.parse_args(argv)
 
@@ -348,6 +407,7 @@ def main(argv: list[str] | None = None) -> int:
     (out / "retrieval.jsonl").write_text("".join(json.dumps(r) + "\n" for r in r_rows))
 
     summaries: dict[str, dict] = {}
+    rows_by_config: dict[str, list[dict]] = {}
     if not args.retrieval_only:
         from .agents.graph import build_graph
         from .agents.llm import GeminiLLM
@@ -366,7 +426,10 @@ def main(argv: list[str] | None = None) -> int:
                 **CONFIGS[name],
             )
             print(f"== config: {name}", file=sys.stderr)
-            rows = evaluate(questions, graph, llm, sleep_s=args.sleep)
+            rows = evaluate(
+                questions, graph, llm, sleep_s=args.sleep, retry_cooldown_s=args.retry_cooldown
+            )
+            rows_by_config[name] = rows
             (out / f"results_{name}.jsonl").write_text(
                 "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows)
             )
@@ -377,7 +440,7 @@ def main(argv: list[str] | None = None) -> int:
         counts[q.category] = counts.get(q.category, 0) + 1
     summary = {"retrieval": retrieval, "configs": summaries, "llm_model": settings.llm_model}
     (out / "summary.json").write_text(json.dumps(summary, indent=2))
-    report = report_markdown(summaries, retrieval, len(questions), counts)
+    report = report_markdown(summaries, retrieval, len(questions), counts, rows_by_config)
     (out / "report.md").write_text(report)
     print(report)
     return 0
