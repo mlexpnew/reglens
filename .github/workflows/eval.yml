@@ -1,0 +1,58 @@
+name: Eval
+
+# Manual evaluation run: builds the index, then scores RegLens on the labeled
+# question set in data/eval/questions.jsonl for each agent configuration.
+on:
+  workflow_dispatch:
+    inputs:
+      configs:
+        description: "Comma-separated configs: full, no_checker, no_planner, baseline"
+        required: false
+        default: "full,no_checker"
+      limit:
+        description: "Only the first N questions (0 = all)"
+        required: false
+        default: "0"
+      sleep:
+        description: "Seconds between questions (helps with free-tier rate limits)"
+        required: false
+        default: "4"
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[hf,agents]"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ hashFiles('src/reglens/config.py') }}
+      - uses: actions/cache@v4
+        with:
+          path: data/raw
+          key: sebi-pdfs-${{ hashFiles('data/sources.csv') }}
+      - name: Build index
+        run: python -m reglens.ingest.cli --download > report.json 2> ingest.log || { cat ingest.log; exit 1; }
+      - name: Evaluate
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          CONFIGS: ${{ inputs.configs }}
+          LIMIT: ${{ inputs.limit }}
+          SLEEP: ${{ inputs.sleep }}
+        run: |
+          python -m reglens.eval --configs "$CONFIGS" --limit "$LIMIT" --sleep "$SLEEP" --out eval_results
+          cat eval_results/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-results
+          path: eval_results/
