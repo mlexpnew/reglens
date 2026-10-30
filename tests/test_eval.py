@@ -6,6 +6,7 @@ from reglens.eval import (
     CountingLLM,
     Question,
     _fmt,
+    check_gates,
     details_markdown,
     evaluate,
     fact_hits,
@@ -235,3 +236,17 @@ def test_formatting_and_per_question_details():
     md = details_markdown(rows)
     assert "| q1 | single | verified | 1/2 | cpl | 1.0 |" in md
     assert "refused (no evidence)" in md and "error: RuntimeError: 429" in md
+
+
+def test_gate_passes_good_run_and_lists_every_broken_threshold():
+    good = {
+        "questions": 36, "errors": 0, "fact_recall": 0.9, "citation_precision": 0.95,
+        "refusal_accuracy": 1.0, "ungrounded_claim_rate": 0.0,
+    }
+    assert check_gates(good) == []
+    bad = dict(good, fact_recall=0.5, ungrounded_claim_rate=0.2, errors=6)
+    failures = check_gates(bad)
+    assert len(failures) == 3
+    assert any(f.startswith("fact_recall") for f in failures)
+    assert any(f.startswith("errors") for f in failures)
+    assert check_gates(dict(good, citation_precision=None)) == ["citation_precision: no value"]

@@ -3,6 +3,8 @@ name: Eval
 # Manual evaluation run: builds the index, then scores RegLens on the labeled
 # question set in data/eval/questions.jsonl for each agent configuration.
 on:
+  schedule:
+    - cron: "30 3 * * 1"   # every Monday 09:00 IST: weekly quality check
   workflow_dispatch:
     inputs:
       configs:

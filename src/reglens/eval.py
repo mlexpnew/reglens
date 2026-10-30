@@ -203,6 +203,29 @@ def summarize(rows: list[dict]) -> dict:
         "approx_tokens_mean": _mean([r["approx_tokens"] for r in ok]),
     }
 
+# Release gate: the Eval workflow fails when the gated config misses any threshold.
+# Set each limit a little below your first real score, then raise it as RegLens improves.
+GATES: dict[str, tuple[str, float]] = {
+    "fact_recall": ("min", 0.70),
+    "citation_precision": ("min", 0.80),
+    "refusal_accuracy": ("min", 0.80),
+    "ungrounded_claim_rate": ("max", 0.05),
+}
+MAX_ERROR_SHARE = 0.10  # more failed questions than this means the run itself is not trusted
+
+
+def check_gates(summary: dict, gates: dict[str, tuple[str, float]] = GATES) -> list[str]:
+    """Return one message per broken threshold; an empty list means the gate passed."""
+    failures = []
+    for key, (kind, limit) in gates.items():
+        value = summary.get(key)
+        if value is None:
+            failures.append(f"{key}: no value")
+        elif (kind == "min" and value < limit) or (kind == "max" and value > limit):
+            failures.append(f"{key}: {value:.2f} ({kind} {limit:.2f})")
+    if summary.get("questions") and summary["errors"] / summary["questions"] > MAX_ERROR_SHARE:
+        failures.append(f"errors: {summary['errors']} of {summary['questions']} questions")
+    return failures
 
 def retrieval_rows(
     questions: list[Question], retriever, reranker, retrieve_k: int, rerank_k: int
