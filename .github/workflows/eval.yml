@@ -17,6 +17,14 @@ on:
         description: "Seconds between questions (helps with free-tier rate limits)"
         required: false
         default: "15"
+      llm:
+        description: "Provider chain, tried in order (keys come from repo secrets)"
+        required: false
+        default: "groq:llama-3.3-70b-versatile,gemini:gemini-2.5-flash"
+      resume:
+        description: "Continue the last run: keep scored questions, run only the rest"
+        type: boolean
+        default: false
 
 jobs:
   eval:
@@ -42,15 +50,36 @@ jobs:
           key: sebi-pdfs-${{ hashFiles('data/sources.csv') }}
       - name: Build index
         run: python -m reglens.ingest.cli --download > report.json 2> ingest.log || { cat ingest.log; exit 1; }
-      - name: Evaluate
+      - name: Restore previous results (resume)
+        if: ${{ inputs.resume }}
+        uses: actions/cache/restore@v4
+        with:
+          path: eval_results
+          key: eval-${{ hashFiles('data/eval/questions.jsonl', 'data/sources.csv') }}-${{ github.run_id }}
+          restore-keys: eval-${{ hashFiles('data/eval/questions.jsonl', 'data/sources.csv') }}-
+      - name: Evaluate (fails if coverage is below 90%)
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          REGLENS_LLM: ${{ inputs.llm }}
           CONFIGS: ${{ inputs.configs }}
           LIMIT: ${{ inputs.limit }}
           SLEEP: ${{ inputs.sleep }}
+          RESUME: ${{ inputs.resume && '--resume' || '' }}
         run: |
-          python -m reglens.eval --configs "$CONFIGS" --limit "$LIMIT" --sleep "$SLEEP" --out eval_results
-          cat eval_results/report.md >> "$GITHUB_STEP_SUMMARY"
+          set +e
+          python -m reglens.eval --configs "$CONFIGS" --limit "$LIMIT" --sleep "$SLEEP" \
+            --out eval_results $RESUME
+          code=$?
+          cat eval_results/report.md >> "$GITHUB_STEP_SUMMARY" || true
+          exit $code
+      - name: Save results for a later resume
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: eval_results
+          key: eval-${{ hashFiles('data/eval/questions.jsonl', 'data/sources.csv') }}-${{ github.run_id }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:

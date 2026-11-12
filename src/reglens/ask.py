@@ -20,7 +20,7 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
 
     from .agents.graph import build_graph
-    from .agents.llm import GeminiLLM
+    from .agents.llm import build_llm
     from .ingest.store import ChromaStore
     from .retrieve import ChromaRetriever, CrossEncoderReranker
 
@@ -34,7 +34,7 @@ def main(argv: list[str] | None = None) -> int:
     graph = build_graph(
         ChromaRetriever(store),
         CrossEncoderReranker(settings.rerank_model),
-        GeminiLLM(settings.llm_model),
+        build_llm(settings.llm_chain),
         retrieve_k=settings.retrieve_k,
         rerank_k=settings.rerank_k,
         min_relevance=settings.min_relevance,
