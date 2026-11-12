@@ -235,3 +235,51 @@ def test_formatting_and_per_question_details():
     md = details_markdown(rows)
     assert "| q1 | single | verified | 1/2 | cpl | 1.0 |" in md
     assert "refused (no evidence)" in md and "error: RuntimeError: 429" in md
+
+
+Q3 = Question(id="q3", category="single", question="Third?", gold_docs=("cpl",), facts=(("2%",),))
+
+
+def test_quota_exhaustion_skips_the_rest_without_hammering_the_provider():
+    from reglens.agents.llm import QuotaExhausted
+
+    llm = CountingLLM(EchoLLM())
+    passages = [P(1, "cpl", "Broad 2% of the deliverable supply")]
+    graph = FakeGraph(
+        llm, [answered_state("2%.", ["S1"], passages), QuotaExhausted("all providers exhausted")]
+    )
+    waits = []
+    rows = evaluate([Q_LIMIT, Q_OFF, Q3], graph, llm, sleep=waits.append, log=lambda m: None)
+    assert rows[0]["error"] is None
+    assert rows[1]["error"].startswith("QuotaExhausted")
+    assert rows[2]["error"].startswith("skipped: ") and rows[2]["llm_calls"] == 0
+    assert waits == []  # no cooldown retry: waiting cannot refill a daily quota
+    s = summarize(rows)
+    assert s["completed"] == 1 and s["coverage"] == round(1 / 3, 4)
+    assert s["errors"] == 1 and s["skipped"] == 1
+
+
+def test_resume_reuses_checkpoint_and_runs_only_missing(tmp_path):
+    passages = [P(1, "cpl", "Broad 2% of the deliverable supply")]
+    ckpt = tmp_path / "results_full.jsonl"
+
+    llm = CountingLLM(EchoLLM())
+    first = FakeGraph(llm, [answered_state("2%.", ["S1"], passages), RuntimeError("429")])
+    evaluate([Q_LIMIT, Q3], first, llm, retry_cooldown_s=-1, checkpoint=ckpt, log=lambda m: None)
+    assert ckpt.exists()
+
+    llm2 = CountingLLM(EchoLLM())
+    second = FakeGraph(llm2, [answered_state("2%.", ["S1"], passages)])
+    rows = evaluate([Q_LIMIT, Q3], second, llm2, checkpoint=ckpt, resume=True, log=lambda m: None)
+    assert [r["error"] for r in rows] == [None, None]
+    assert second.states == []  # exactly one new graph call: only q3 re-ran
+    assert len(ckpt.read_text().splitlines()) == 2
+
+
+def test_report_flags_incomplete_runs_and_shows_coverage():
+    rows = [score(Q_LIMIT, None, 0.0, error="skipped: quota"), score(Q_OFF, refused_state(), 1.0)]
+    md = report_markdown(
+        {"full": summarize(rows)}, None, 2, {}, min_coverage=0.9, llm_name="groq:x"
+    )
+    assert "Incomplete run" in md and "| **Coverage (questions run)** | 1/2 |" in md
+    assert "groq:x" in md

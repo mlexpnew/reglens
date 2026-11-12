@@ -9,6 +9,8 @@ Scoring is deterministic (no LLM judge), so results are reproducible and free to
 - refusal accuracy: unanswerable and off-topic questions that were refused
 - ungrounded claim rate: claims containing a number that is absent from their cited pages
 - latency p50 / p95, LLM calls and approximate tokens per question
+- coverage: share of questions that actually ran. Quality metrics are only published as
+  trustworthy when coverage clears `--min-coverage`; otherwise the run fails loudly
 
 Each agent configuration (full pipeline, no Checker, ...) runs separately, so the report
 shows what every agent adds (ablation).
@@ -175,6 +177,7 @@ def score(
 
 def summarize(rows: list[dict]) -> dict:
     ok = [r for r in rows if not r.get("error")]
+    skipped = sum(1 for r in rows if (r.get("error") or "").startswith(SKIPPED))
     answerable = [r for r in ok if r["category"] in ANSWERABLE]
     negative = [r for r in ok if r["category"] not in ANSWERABLE]
     answered = [r for r in answerable if not r["refused"]]
@@ -187,7 +190,10 @@ def summarize(rows: list[dict]) -> dict:
 
     return {
         "questions": len(rows),
-        "errors": len(rows) - len(ok),
+        "completed": len(ok),
+        "coverage": _ratio(len(ok), len(rows)),
+        "errors": len(rows) - len(ok) - skipped,
+        "skipped": skipped,
         "answer_rate": _mean([not r["refused"] for r in answerable]),
         "fact_recall": _mean([r["fact_hits"] / r["facts"] for r in with_facts]),
         "fully_correct": _mean([r["fact_hits"] == r["facts"] for r in with_facts]),
@@ -243,21 +249,50 @@ def summarize_retrieval(rows: list[dict], min_relevance: float) -> dict:
     }
 
 
+SKIPPED = "skipped: "
+
+
+def _is_quota(exc: Exception) -> bool:
+    return type(exc).__name__ == "QuotaExhausted"
+
+
+def load_checkpoint(path: Path | None) -> dict[str, dict]:
+    """Rows already scored without error, keyed by question id."""
+    if not path or not path.exists():
+        return {}
+    done = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            row = json.loads(line)
+            if not row.get("error"):
+                done[row["id"]] = row
+    return done
+
+
 def evaluate(
     questions: list[Question],
     graph,
     llm: CountingLLM,
     sleep_s: float = 0.0,
     retry_cooldown_s: float = 60.0,
+    checkpoint: Path | None = None,
+    resume: bool = False,
     clock: Callable[[], float] = time.perf_counter,
     sleep: Callable[[float], None] = time.sleep,
     log: Callable[[str], None] = lambda msg: print(msg, file=sys.stderr),
 ) -> list[dict]:
     """Run one configuration. A failing question is recorded, never fatal.
 
-    Questions that fail (typically a provider rate limit) are retried once after a
-    cooldown, so a burst of 429s does not count as a wrong answer.
+    - Transient failures (a burst of 429s) are retried once after a cooldown.
+    - A spent daily quota stops the run: remaining questions are marked skipped, not
+      wrong, and are not hammered with requests that cannot succeed.
+    - With a checkpoint, every row is saved as it finishes; `resume=True` keeps rows that
+      already succeeded, so a run cut short by quota can finish tomorrow.
     """
+    done = load_checkpoint(checkpoint) if resume else {}
+    if done:
+        log(f"resuming: {len(done)} question(s) already scored")
+    quota_hit = {"msg": ""}
 
     def run(q: Question) -> dict:
         llm.reset()
@@ -267,28 +302,52 @@ def evaluate(
             state = graph.invoke({"question": q.question})
         except Exception as exc:  # record the failure and keep going
             error = f"{type(exc).__name__}: {exc}"[:300]
+            if _is_quota(exc):
+                quota_hit["msg"] = error
         return score(q, state, clock() - t0, llm.calls, llm.chars, error)
+
+    def skipped(q: Question) -> dict:
+        return score(q, None, 0.0, error=f"{SKIPPED}{quota_hit['msg'][:120]}")
 
     def status(row: dict) -> str:
         return "ERROR" if row["error"] else ("refused" if row["refused"] else "answered")
 
-    rows = []
+    def save(rows: list[dict]) -> None:
+        if checkpoint:
+            checkpoint.parent.mkdir(parents=True, exist_ok=True)
+            checkpoint.write_text(
+                "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8"
+            )
+
+    rows: list[dict] = []
     for i, q in enumerate(questions, start=1):
+        if q.id in done:
+            rows.append(done[q.id])
+            continue
+        if quota_hit["msg"]:
+            rows.append(skipped(q))
+            continue
         rows.append(run(q))
+        save(rows)
         log(f"[{i}/{len(questions)}] {q.id}: {status(rows[-1])} in {rows[-1]['latency_s']}s")
-        if sleep_s and i < len(questions):
+        if quota_hit["msg"]:
+            log("daily quota exhausted on every provider: skipping the rest, resume later")
+        elif sleep_s and i < len(questions):
             sleep(sleep_s)
 
-    failed = [i for i, r in enumerate(rows) if r["error"]]
-    if failed and retry_cooldown_s >= 0:
+    failed = [i for i, r in enumerate(rows) if r["error"] and not r["error"].startswith(SKIPPED)]
+    if failed and retry_cooldown_s >= 0 and not quota_hit["msg"]:
         log(f"retrying {len(failed)} failed question(s) after {retry_cooldown_s:g}s")
         sleep(retry_cooldown_s)
         for i in failed:
+            if quota_hit["msg"]:
+                break
             rows[i] = run(questions[i])
             rows[i]["retried"] = True
             log(f"[retry] {questions[i].id}: {status(rows[i])} in {rows[i]['latency_s']}s")
             if sleep_s:
                 sleep(sleep_s)
+    save(rows)
     return rows
 
 
@@ -336,6 +395,7 @@ METRIC_ROWS = [
     ("LLM calls per question", "llm_calls_mean", False),
     ("Approx. tokens per question", "approx_tokens_mean", False),
     ("Errors", "errors", False),
+    ("Skipped (quota)", "skipped", False),
 ]
 
 
@@ -345,16 +405,31 @@ def report_markdown(
     n_questions: int,
     counts: dict,
     rows_by_config: dict[str, list[dict]] | None = None,
+    min_coverage: float = 0.0,
+    llm_name: str = "",
 ) -> str:
     mix = ", ".join(f"{v} {k}" for k, v in counts.items())
     out = [f"### RegLens evaluation ({n_questions} questions: {mix})", ""]
+    if llm_name:
+        out += [f"LLM providers: `{llm_name}`", ""]
     if retrieval:
         out += ["**Retrieval** (no LLM)", "", "| Metric | Score |", "|---|---|"]
         out += [f"| {k} | {_fmt(v, pct=True)} |" for k, v in retrieval.items()]
         out.append("")
     if summaries:
         names = list(summaries)
+        low = [n for n in names if (summaries[n].get("coverage") or 0) < min_coverage]
+        if low:
+            out += [
+                f"> **Incomplete run:** {', '.join(low)} below {min_coverage:.0%} coverage. "
+                "Quality scores are not reliable until the run is resumed.",
+                "",
+            ]
         out += ["| Metric | " + " | ".join(names) + " |", "|---|" + "---|" * len(names)]
+        cov = " | ".join(
+            f"{summaries[n]['completed']}/{summaries[n]['questions']}" for n in names
+        )
+        out.append(f"| **Coverage (questions run)** | {cov} |")
         for label, key, pct in METRIC_ROWS:
             cells = " | ".join(_fmt(summaries[n][key], pct) for n in names)
             out.append(f"| {label} | {cells} |")
@@ -378,6 +453,17 @@ def main(argv: list[str] | None = None) -> int:
         help="seconds to wait before retrying failed questions once (-1 disables)",
     )
     p.add_argument("--retrieval-only", action="store_true", help="skip all LLM calls")
+    p.add_argument(
+        "--resume",
+        action="store_true",
+        help="keep questions already scored in --out and run only the rest",
+    )
+    p.add_argument(
+        "--min-coverage",
+        type=float,
+        default=0.9,
+        help="fail (exit 3) if any config ran fewer than this share of questions",
+    )
     args = p.parse_args(argv)
 
     configs = [c.strip() for c in args.configs.split(",") if c.strip()]
@@ -408,11 +494,14 @@ def main(argv: list[str] | None = None) -> int:
 
     summaries: dict[str, dict] = {}
     rows_by_config: dict[str, list[dict]] = {}
+    llm_name = ""
     if not args.retrieval_only:
         from .agents.graph import build_graph
-        from .agents.llm import GeminiLLM
+        from .agents.llm import build_llm
 
-        llm = CountingLLM(GeminiLLM(settings.llm_model))
+        chain = build_llm(settings.llm_chain)
+        llm = CountingLLM(chain)
+        llm_name = " -> ".join(chain.names)
         for name in configs:
             graph = build_graph(
                 retriever,
@@ -427,22 +516,31 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(f"== config: {name}", file=sys.stderr)
             rows = evaluate(
-                questions, graph, llm, sleep_s=args.sleep, retry_cooldown_s=args.retry_cooldown
+                questions,
+                graph,
+                llm,
+                sleep_s=args.sleep,
+                retry_cooldown_s=args.retry_cooldown,
+                checkpoint=out / f"results_{name}.jsonl",
+                resume=args.resume,
             )
             rows_by_config[name] = rows
-            (out / f"results_{name}.jsonl").write_text(
-                "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows)
-            )
             summaries[name] = summarize(rows)
 
     counts: dict[str, int] = {}
     for q in questions:
         counts[q.category] = counts.get(q.category, 0) + 1
-    summary = {"retrieval": retrieval, "configs": summaries, "llm_model": settings.llm_model}
+    summary = {"retrieval": retrieval, "configs": summaries, "llm": llm_name}
     (out / "summary.json").write_text(json.dumps(summary, indent=2))
-    report = report_markdown(summaries, retrieval, len(questions), counts, rows_by_config)
+    report = report_markdown(
+        summaries, retrieval, len(questions), counts, rows_by_config, args.min_coverage, llm_name
+    )
     (out / "report.md").write_text(report)
     print(report)
+    low = [n for n, s in summaries.items() if (s["coverage"] or 0) < args.min_coverage]
+    if low:
+        print(f"coverage below {args.min_coverage:.0%} for: {', '.join(low)}", file=sys.stderr)
+        return 3
     return 0
 
 
