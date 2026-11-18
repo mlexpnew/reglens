@@ -4,7 +4,7 @@
 
 **Ask a question about SEBI regulations. Get a cited answer, checked by a compliance agent, with eval scores on every release.**
 
-> Status: Day 3 of 7. Full agent loop live: Planner, Analyst and Compliance Checker with verified citations. Evaluation and API land next.
+> Status: Day 4 of 7. Agent loop live, evaluation harness live, provider fallback live. Full scored eval run and API land next.
 
 ## Demo
 
@@ -104,9 +104,31 @@ retrieve -> gate --(nothing relevant)--> refuse                         (0 LLM c
 
 Trade-off measured: the Checker adds an LLM call, so verified answers take roughly 2x longer than Day 2 (12 to 23 s vs 6 to 12 s). Day 4 evaluation quantifies whether the accuracy gain is worth it.
 
-## Evaluation (coming Day 4)
+## Evaluation (Day 4)
 
-Day 4 measures RegLens on a labeled set of SEBI questions: faithfulness, answer relevance, retrieval recall@5, p95 latency and cost per query. Each metric is run with the Planner and Checker switched on and off (ablation), so the README will show what every agent actually adds. Scores replace this paragraph when they exist.
+`python -m reglens.eval` scores RegLens on 36 labeled questions (27 single, 3 multi part, 4 unanswerable, 2 off topic). Scoring is deterministic: fact matching against expected values, cited circulars against gold circulars, numbers checked against cited pages. No LLM judge, so scores are reproducible and free to compute.
+
+### Retrieval (no LLM, [Eval #3](https://github.com/mlexpnew/reglens/actions/runs/41051413247))
+| Metric | Score |
+|---|---|
+| Correct circular ranked first (recall@1) | 95% |
+| Correct circular in top 4 (recall@4) | 100% |
+| Answerable questions passing the relevance gate | 97% |
+| Off topic / unanswerable blocked by the gate alone | 67% |
+
+The gate is a cheap first filter, not the last line: the Analyst and Checker refused 100% of the negatives that slipped past it.
+
+### Answer quality: why the first numbers were discarded
+Eval #3 hit Gemini's **free tier daily quota** after 9 questions; 27 of 36 rows were `429 RESOURCE_EXHAUSTED`, not wrong answers. Publishing that as "60% accuracy" would have been misleading, so the harness was hardened instead:
+
+| Fix | What it does |
+|---|---|
+| Provider chain | `REGLENS_LLM="groq:llama-3.3-70b-versatile,gemini:gemini-2.5-flash"`: Groq first, Gemini as fallback; Ollama and OpenRouter also supported. Providers without a key are skipped |
+| Quota aware | A daily quota 429 is detected and never retried; remaining questions are marked **skipped**, not wrong |
+| Checkpoint + resume | Every row is saved as it finishes; `--resume` (or the workflow's *resume* box) runs only what is missing |
+| Coverage gate | The report shows `completed / total` per config, and the run **fails** below 90% coverage, so partial runs can never pass as results |
+
+Full scored results replace this section after the next complete run.
 
 ## Run locally
 ```bash
@@ -114,14 +136,16 @@ python -m venv .venv && source .venv/bin/activate
 make install-full        # dev + Hugging Face models + agents (pulls PyTorch, ~1 GB)
 make test
 make ingest   # downloads circulars, builds the index, runs a sample query
-export GEMINI_API_KEY=...   # free key from aistudio.google.com
+export GROQ_API_KEY=...     # free key from console.groq.com (first in the provider chain)
+export GEMINI_API_KEY=...   # optional fallback, free key from aistudio.google.com
 reglens-ask "What is the Credit Risk-o-Meter?"
+make eval                   # add --resume to continue a run cut short by quota
 ```
 
 ## Project layout
 ```
 src/reglens/ingest/   manifest, download, parse, chunk, store, pipeline, cli
-src/reglens/agents/   LangGraph graph, Planner, Analyst, Checker, Gemini client
+src/reglens/agents/   LangGraph graph, Planner, Analyst, Checker, LLM providers + fallback
 src/reglens/retrieve.py  vector retrieval + cross-encoder reranking
 src/reglens/ask.py    question CLI
 tests/                unit + end-to-end tests with fakes (no network, no API key)

@@ -26,6 +26,12 @@ class Settings:
     min_relevance: float = float(os.getenv("REGLENS_MIN_RELEVANCE", "0.10"))
 
     llm_model: str = os.getenv("REGLENS_LLM_MODEL", "gemini-2.5-flash")
+    # Provider chain, tried in order; providers without an API key are skipped.
+    # e.g. "groq:llama-3.3-70b-versatile,gemini:gemini-2.5-flash" or "ollama:qwen2.5:7b-instruct"
+    llm_chain: str = os.getenv(
+        "REGLENS_LLM",
+        f"groq:llama-3.3-70b-versatile,gemini:{os.getenv('REGLENS_LLM_MODEL', 'gemini-2.5-flash')}",
+    )
 
     # Agents: switchable so evaluation can measure what each one adds (ablation)
     use_planner: bool = os.getenv("REGLENS_USE_PLANNER", "1") == "1"
